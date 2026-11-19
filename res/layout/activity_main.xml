@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Camera (video) capabilities probe"
+            android:textStyle="bold"
+            android:textSize="18sp"
+            android:paddingBottom="8dp" />
+
+        <Spinner
+            android:id="@+id/camera_spinner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <Button
+            android:id="@+id/btn_scan"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Scan supported video capabilities" />
+
+        <TextView
+            android:id="@+id/supported_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textIsSelectable="true"
+            android:typeface="monospace"
+            android:textSize="12sp"
+            android:padding="8dp"
+            android:text="Tap scan to list supported video sizes/fps." />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#888888"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Test video configuration (supported or unsupported)"
+            android:textStyle="bold" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Resolution (WxH):" />
+        <Spinner android:id="@+id/res_spinner" android:layout_width="match_parent" android:layout_height="wrap_content" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="FPS:" />
+        <Spinner android:id="@+id/fps_spinner" android:layout_width="match_parent" android:layout_height="wrap_content" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Video encoder:" />
+        <Spinner android:id="@+id/encoder_spinner" android:layout_width="match_parent" android:layout_height="wrap_content" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Output format:" />
+        <Spinner android:id="@+id/format_spinner" android:layout_width="match_parent" android:layout_height="wrap_content" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Bitrate (preset):" />
+        <Spinner android:id="@+id/bitrate_spinner" android:layout_width="match_parent" android:layout_height="wrap_content" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Custom bitrate (Mbps, overrides preset if set):" />
+        <EditText
+            android:id="@+id/bitrate_mbps"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="numberDecimal"
+            android:hint="e.g. 6 or 12.5" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Orientation (horizontal/vertical):" />
+        <Spinner android:id="@+id/orientation_spinner" android:layout_width="match_parent" android:layout_height="wrap_content" />
+
+        <CheckBox
+            android:id="@+id/cb_audio"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Include audio (RECORD_AUDIO)"
+            android:checked="false" />
+
+        <Button
+            android:id="@+id/btn_test"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Test selected configuration" />
+
+        <TextView
+            android:id="@+id/result_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="200dp"
+            android:padding="12dp"
+            android:textIsSelectable="true"
+            android:typeface="monospace"
+            android:textSize="13sp"
+            android:background="#000000"
+            android:textColor="#FFFFFF"
+            android:text="Result will appear here (black background fallback on error)." />
+
+    </LinearLayout>
+</ScrollView>

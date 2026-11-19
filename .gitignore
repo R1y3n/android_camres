@@ -1,0 +1,28 @@
+# Build outputs / intermediates
+build/
+out/
+bin/
+gen/
+
+# APKs & signing artifacts
+*.apk
+*.ap_
+*.aab
+*.idsig
+*.keystore
+*.jks
+
+# IDE / editor
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config
+local.properties
