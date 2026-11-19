@@ -4,14 +4,17 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.SurfaceTexture;
-import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.CaptureFailure;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
+import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.CamcorderProfile;
 import android.media.MediaRecorder;
@@ -21,7 +24,6 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.provider.MediaStore;
 import android.util.Range;
@@ -32,25 +34,33 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 
-import java.io.File;
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class MainActivity extends Activity {
     private static final int REQ_PERMS = 1001;
+    private static final String PREFS = "camres_presets";
+    private static final String KEY_PRESETS = "presets_json";
 
     private Spinner cameraSpinner;
     private Spinner resSpinner;
@@ -60,15 +70,27 @@ public class MainActivity extends Activity {
     private Spinner bitrateSpinner;
     private EditText bitrateMbpsInput;
     private Spinner orientationSpinner;
+    private EditText durationSecInput;
+    private Spinner focusModeSpinner;
+    private SeekBar focusDistSeek;
+    private TextView focusDistLabel;
+    private TextView focusInfoText;
     private CheckBox cbAudio;
     private TextView supportedText;
     private TextView resultText;
+    private TextView liveMetaText;
+    private Spinner presetSpinner;
+    private EditText presetNameInput;
 
     private final List<String> cameraIds = new ArrayList<>();
     private HandlerThread cameraThread;
     private Handler cameraHandler;
     private volatile CameraDevice openedCamera;
     private volatile CameraCaptureSession openedSession;
+
+    private float currentMinFocusDistance = 0f; // diopters, 0 = fixed/infinity
+    private volatile boolean liveMetaEnabled = false;
+    private final AtomicLong lastMetaUiMs = new AtomicLong(0);
 
     // Option model classes
     static class ResOption {
@@ -107,6 +129,11 @@ public class MainActivity extends Activity {
         OrientationOption(String name, int degrees) { this.name = name; this.degrees = degrees; }
         public String toString() { return name; }
     }
+    static class FocusModeOption {
+        final String name; final int afMode; final boolean manualDistance;
+        FocusModeOption(String name, int afMode, boolean manualDistance) { this.name = name; this.afMode = afMode; this.manualDistance = manualDistance; }
+        public String toString() { return name; }
+    }
 
     private final List<ResOption> resOptions = new ArrayList<>();
     private final List<FpsOption> fpsOptions = new ArrayList<>();
@@ -114,6 +141,8 @@ public class MainActivity extends Activity {
     private final List<FormatOption> formatOptions = new ArrayList<>();
     private final List<BitrateOption> bitrateOptions = new ArrayList<>();
     private final List<OrientationOption> orientationOptions = new ArrayList<>();
+    private final List<FocusModeOption> focusModeOptions = new ArrayList<>();
+    private final List<String> presetNames = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -128,12 +157,23 @@ public class MainActivity extends Activity {
         bitrateSpinner = findViewById(R.id.bitrate_spinner);
         bitrateMbpsInput = findViewById(R.id.bitrate_mbps);
         orientationSpinner = findViewById(R.id.orientation_spinner);
+        durationSecInput = findViewById(R.id.duration_sec);
+        focusModeSpinner = findViewById(R.id.focus_mode_spinner);
+        focusDistSeek = findViewById(R.id.focus_dist_seek);
+        focusDistLabel = findViewById(R.id.focus_dist_label);
+        focusInfoText = findViewById(R.id.focus_info_text);
         cbAudio = findViewById(R.id.cb_audio);
         supportedText = findViewById(R.id.supported_text);
         resultText = findViewById(R.id.result_text);
+        liveMetaText = findViewById(R.id.live_meta_text);
+        presetSpinner = findViewById(R.id.preset_spinner);
+        presetNameInput = findViewById(R.id.preset_name);
 
         Button btnScan = findViewById(R.id.btn_scan);
         Button btnTest = findViewById(R.id.btn_test);
+        Button btnPresetSave = findViewById(R.id.btn_preset_save);
+        Button btnPresetLoad = findViewById(R.id.btn_preset_load);
+        Button btnPresetRename = findViewById(R.id.btn_preset_rename);
 
         btnScan.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { scanSelectedCamera(); }
@@ -141,8 +181,24 @@ public class MainActivity extends Activity {
         btnTest.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { runTest(); }
         });
+        btnPresetSave.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { savePreset(); }
+        });
+        btnPresetLoad.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { loadSelectedPreset(); }
+        });
+        btnPresetRename.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { renameSelectedPreset(); }
+        });
+
+        focusDistSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateFocusDistLabel(); }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+            @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+        });
 
         initStaticOptions();
+        refreshPresetSpinner(null);
         ensurePermissionsAndLoadCameras();
     }
 
@@ -185,18 +241,45 @@ public class MainActivity extends Activity {
         orientationOptions.add(new OrientationOption("Horizontal / Landscape (180°)", 180));
         orientationOptions.add(new OrientationOption("Vertical / Portrait (270°)", 270));
 
+        setDefaultFocusModes();
+        updateFocusDistLabel();
+
         setSpinner(encoderSpinner, encoderOptions);
         setSpinner(formatSpinner, formatOptions);
         setSpinner(bitrateSpinner, bitrateOptions);
         setSpinner(orientationSpinner, orientationOptions);
+        setSpinner(focusModeSpinner, focusModeOptions);
 
-        // initial generic probe lists until scan
         resOptions.clear();
         addCommonResolutions(Collections.<String>emptySet());
         setSpinner(resSpinner, resOptions);
         fpsOptions.clear();
         addCommonFps(Collections.<Integer>emptySet());
         setSpinner(fpsSpinner, fpsOptions);
+    }
+
+    private void setDefaultFocusModes() {
+        focusModeOptions.clear();
+        focusModeOptions.add(new FocusModeOption("Auto (AF_MODE_AUTO)", CaptureRequest.CONTROL_AF_MODE_AUTO, false));
+        focusModeOptions.add(new FocusModeOption("Continuous Video (AF_MODE_CONTINUOUS_VIDEO)", CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO, false));
+        focusModeOptions.add(new FocusModeOption("Continuous Picture (AF_MODE_CONTINUOUS_PICTURE)", CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE, false));
+        focusModeOptions.add(new FocusModeOption("Macro (AF_MODE_MACRO)", CaptureRequest.CONTROL_AF_MODE_MACRO, false));
+        focusModeOptions.add(new FocusModeOption("EDOF (AF_MODE_EDOF)", CaptureRequest.CONTROL_AF_MODE_EDOF, false));
+        focusModeOptions.add(new FocusModeOption("Manual / OFF (use focus distance)", CaptureRequest.CONTROL_AF_MODE_OFF, true));
+    }
+
+    private void updateFocusDistLabel() {
+        float dist = getSelectedFocusDistance();
+        String extra = (currentMinFocusDistance <= 0f) ? " (fixed-focus or unknown range)" : " of max " + String.format(Locale.US, "%.3f", currentMinFocusDistance);
+        focusDistLabel.setText("Manual focus distance (close ← → far, diopters): " + String.format(Locale.US, "%.3f", dist) + extra);
+    }
+
+    private float getSelectedFocusDistance() {
+        if (currentMinFocusDistance <= 0f) return 0f;
+        int p = focusDistSeek != null ? focusDistSeek.getProgress() : 0;
+        int max = focusDistSeek != null ? Math.max(1, focusDistSeek.getMax()) : 1000;
+        // 0 = close (max diopters), max = far (0.0)
+        return currentMinFocusDistance * (1f - (p / (float) max));
     }
 
     private <T> void setSpinner(Spinner sp, List<T> items) {
@@ -329,7 +412,6 @@ public class MainActivity extends Activity {
             } else {
                 for (Range<Integer> r : fpsRanges) {
                     sb.append("  [").append(r.getLower()).append(", ").append(r.getUpper()).append("]\n");
-                    // mark fixed ranges as supported single fps values
                     if (r.getLower() != null && r.getLower().equals(r.getUpper())) supportedFpsVals.add(r.getLower());
                     if (r.getUpper() != null) supportedFpsVals.add(r.getUpper());
                     if (r.getLower() != null) supportedFpsVals.add(r.getLower());
@@ -365,15 +447,40 @@ public class MainActivity extends Activity {
                 sb.append("  (camera id not numeric, skipped)\n");
             }
 
+            // Focus / lens info
+            sb.append("\n=== Focus / lens ===\n");
+            Float minFd = c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+            Float hyper = c.get(CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE);
+            sb.append("  LENS_INFO_MINIMUM_FOCUS_DISTANCE=").append(minFd).append(" diopters (0=fixed/infinity)\n");
+            sb.append("  LENS_INFO_HYPERFOCAL_DISTANCE=").append(hyper).append("\n");
+            int[] afModes = c.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+            sb.append("  CONTROL_AF_AVAILABLE_MODES=").append(afModes == null ? "null" : Arrays.toString(afModes)).append("\n");
+            updateFocusControls(minFd, afModes);
+            StringBuilder finfo = new StringBuilder();
+            finfo.append("minFocusDistance=").append(minFd).append(" diopters");
+            finfo.append(" | hyperfocal=").append(hyper);
+            finfo.append(" | AF modes=").append(afModes == null ? "null" : Arrays.toString(afModes));
+            focusInfoText.setText(finfo.toString());
+
+            // Extra sensor/auto info summary
+            sb.append("\n=== Auto exposure / sensor (summary) ===\n");
+            int[] aeModes = c.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES);
+            sb.append("  AE modes=").append(aeModes == null ? "null" : Arrays.toString(aeModes)).append("\n");
+            Range<Integer> sensRange = c.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
+            sb.append("  Sensitivity(ISO) range=").append(sensRange).append("\n");
+            Range<Long> expRange = c.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
+            sb.append("  Exposure time(ns) range=").append(expRange).append("\n");
+            Integer ois = null, vstab = null;
+            try { int[] oisModes = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION); sb.append("  OIS modes=").append(oisModes == null ? "null" : Arrays.toString(oisModes)).append("\n"); } catch (Throwable ignored) {}
+            try { int[] vs = c.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES); sb.append("  Video stabilization modes=").append(vs == null ? "null" : Arrays.toString(vs)).append("\n"); } catch (Throwable ignored) {}
+
             supportedText.setText(sb.toString());
 
-            // rebuild test option lists including supported markers
+            // rebuild test option lists
             resOptions.clear();
             addCommonResolutions(supportedResKeys);
-            // also ensure all actually supported ones are present
             if (map != null && map.getOutputSizes(MediaRecorder.class) != null) {
                 for (Size s : map.getOutputSizes(MediaRecorder.class)) {
-                    String k = s.getWidth() + "x" + s.getHeight();
                     if (!containsRes(s.getWidth(), s.getHeight())) {
                         resOptions.add(0, new ResOption(s.getWidth(), s.getHeight(), true));
                     }
@@ -383,7 +490,6 @@ public class MainActivity extends Activity {
 
             fpsOptions.clear();
             addCommonFps(supportedFpsVals);
-            // add range-derived common values
             if (fpsRanges != null) {
                 for (Range<Integer> r : fpsRanges) {
                     maybeAddFps(r.getLower(), supportedFpsVals);
@@ -397,6 +503,31 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void updateFocusControls(Float minFd, int[] afModes) {
+        currentMinFocusDistance = (minFd != null && minFd > 0f) ? minFd : 0f;
+        focusModeOptions.clear();
+        Set<Integer> avail = new LinkedHashSet<>();
+        if (afModes != null) for (int m : afModes) avail.add(m);
+        if (avail.isEmpty()) {
+            setDefaultFocusModes();
+        } else {
+            if (avail.contains(CaptureRequest.CONTROL_AF_MODE_AUTO)) focusModeOptions.add(new FocusModeOption("Auto (AF_MODE_AUTO)", CaptureRequest.CONTROL_AF_MODE_AUTO, false));
+            if (avail.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)) focusModeOptions.add(new FocusModeOption("Continuous Video (AF_MODE_CONTINUOUS_VIDEO)", CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO, false));
+            if (avail.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)) focusModeOptions.add(new FocusModeOption("Continuous Picture (AF_MODE_CONTINUOUS_PICTURE)", CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE, false));
+            if (avail.contains(CaptureRequest.CONTROL_AF_MODE_MACRO)) focusModeOptions.add(new FocusModeOption("Macro (AF_MODE_MACRO)", CaptureRequest.CONTROL_AF_MODE_MACRO, false));
+            if (avail.contains(CaptureRequest.CONTROL_AF_MODE_EDOF)) focusModeOptions.add(new FocusModeOption("EDOF (AF_MODE_EDOF)", CaptureRequest.CONTROL_AF_MODE_EDOF, false));
+            if (avail.contains(CaptureRequest.CONTROL_AF_MODE_OFF)) focusModeOptions.add(new FocusModeOption("OFF (fixed)", CaptureRequest.CONTROL_AF_MODE_OFF, false));
+            // Manual distance control (uses OFF + LENS_FOCUS_DISTANCE) if variable focus supported
+            if (currentMinFocusDistance > 0f) {
+                focusModeOptions.add(new FocusModeOption("Manual (set focus distance, AF OFF)", CaptureRequest.CONTROL_AF_MODE_OFF, true));
+            }
+        }
+        setSpinner(focusModeSpinner, focusModeOptions);
+        // default seek to far (0 diopters) when variable focus supported
+        if (focusDistSeek != null) focusDistSeek.setProgress(focusDistSeek.getMax());
+        updateFocusDistLabel();
+    }
+
     private boolean containsRes(int w, int h) {
         for (ResOption r : resOptions) if (r.w == w && r.h == h) return true;
         return false;
@@ -406,7 +537,7 @@ public class MainActivity extends Activity {
         int[][] common = new int[][]{
                 {176,144},{320,240},{352,288},{426,240},{640,360},{640,480},{720,480},{854,480},
                 {1280,720},{1920,1080},{2560,1440},{3840,2160},{7680,4320},
-                {144,176},{240,320},{480,640},{720,1280},{1080,1920} // portrait-ish probes
+                {144,176},{240,320},{480,640},{720,1280},{1080,1920}
         };
         for (int[] wh : common) {
             String k = wh[0] + "x" + wh[1];
@@ -425,13 +556,9 @@ public class MainActivity extends Activity {
     }
 
     private void runTest() {
-        if (cameraIds.isEmpty()) {
-            showResult(false, "No camera available.", null);
-            return;
-        }
+        if (cameraIds.isEmpty()) { showResult(false, "No camera available.", null); return; }
         if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            showResult(false, "CAMERA permission not granted.", null);
-            return;
+            showResult(false, "CAMERA permission not granted.", null); return;
         }
         final int camIdx = Math.max(0, Math.min(cameraSpinner.getSelectedItemPosition(), cameraIds.size() - 1));
         final String camId = cameraIds.get(camIdx);
@@ -441,15 +568,14 @@ public class MainActivity extends Activity {
         final FormatOption fmt = (FormatOption) formatSpinner.getSelectedItem();
         final BitrateOption br = (BitrateOption) bitrateSpinner.getSelectedItem();
         final OrientationOption orient = (OrientationOption) orientationSpinner.getSelectedItem();
+        final FocusModeOption focusMode = (FocusModeOption) focusModeSpinner.getSelectedItem();
         final boolean withAudio = cbAudio.isChecked();
 
-        if (res == null || fps == null || enc == null || fmt == null || br == null || orient == null) {
-            showResult(false, "Missing selection.", null);
-            return;
+        if (res == null || fps == null || enc == null || fmt == null || br == null || orient == null || focusMode == null) {
+            showResult(false, "Missing selection.", null); return;
         }
         if (withAudio && Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            showResult(false, "RECORD_AUDIO permission not granted (uncheck audio or grant permission).", null);
-            return;
+            showResult(false, "RECORD_AUDIO permission not granted (uncheck audio or grant permission).", null); return;
         }
 
         int effBitrateBps = br.bps;
@@ -464,26 +590,40 @@ public class MainActivity extends Activity {
                 effBitrateBps = (int) bpsLong;
                 effBitrateLabel = custom + " Mbps (custom = " + effBitrateBps + " bps)";
             } catch (Exception e) {
-                showResult(false, "Invalid custom bitrate (Mbps): '" + custom + "'", e);
-                return;
+                showResult(false, "Invalid custom bitrate (Mbps): '" + custom + "'", e); return;
             }
         }
+
+        double durationSec = 2.0;
+        try {
+            String ds = durationSecInput != null ? durationSecInput.getText().toString().trim() : "";
+            if (!ds.isEmpty()) durationSec = Double.parseDouble(ds.replace(',', '.'));
+        } catch (Exception ignored) {}
+        if (durationSec <= 0) durationSec = 0.5;
+        if (durationSec > 600) durationSec = 600; // cap at 10 min
+        final int durationMsFinal = (int) Math.round(durationSec * 1000.0);
+        final String durationLabel = String.format(Locale.US, "%.2fs", durationSec);
+
+        final float focusDistFinal = getSelectedFocusDistance();
         final int bitrateBpsFinal = effBitrateBps;
         final String bitrateLabelFinal = effBitrateLabel;
         final int orientationHintFinal = orient.degrees;
         final String orientationLabelFinal = orient.name;
+        final int afModeFinal = focusMode.afMode;
+        final boolean manualFocusFinal = focusMode.manualDistance;
+        final String focusLabelFinal = focusMode.name + (manualFocusFinal ? (" @ " + String.format(Locale.US, "%.3f", focusDistFinal) + "d") : "");
 
         resultText.setBackgroundColor(0xFF000000);
         resultText.setTextColor(0xFFFFFFFF);
-        final String configDesc = describeConfig(camId, res, fps, enc, fmt, bitrateLabelFinal, orientationLabelFinal, withAudio);
+        liveMetaText.setText("Starting...");
+        final String configDesc = describeConfig(camId, res, fps, enc, fmt, bitrateLabelFinal, orientationLabelFinal, withAudio, durationLabel, focusLabelFinal);
         resultText.setText("Testing...\n" + configDesc);
 
         startCameraThread();
-        // Run test orchestration off the camera callback thread to avoid deadlocks on latch.await()
         new Thread(new Runnable() {
             @Override public void run() {
                 try {
-                    TestOutcome out = performTest(camId, res, fps, enc, fmt, bitrateBpsFinal, orientationHintFinal, withAudio);
+                    TestOutcome out = performTest(camId, res, fps, enc, fmt, bitrateBpsFinal, orientationHintFinal, withAudio, durationMsFinal, afModeFinal, manualFocusFinal, focusDistFinal);
                     final String msg = configDesc + "\n\n" + out.message;
                     runOnUiThread(new Runnable() {
                         @Override public void run() { showResult(out.success, msg, null); }
@@ -492,6 +632,8 @@ public class MainActivity extends Activity {
                     runOnUiThread(new Runnable() {
                         @Override public void run() { showResult(false, configDesc + "\n\nFATAL/UNCAUGHT:", t); }
                     });
+                } finally {
+                    liveMetaEnabled = false;
                 }
             }
         }, "CamResTest").start();
@@ -499,7 +641,9 @@ public class MainActivity extends Activity {
 
     static class TestOutcome { boolean success; String message; TestOutcome(boolean s, String m){success=s;message=m;} }
 
-    private TestOutcome performTest(String camId, ResOption res, FpsOption fps, EncoderOption enc, FormatOption fmt, int bitrateBps, int orientationHint, boolean withAudio) {
+    private TestOutcome performTest(String camId, ResOption res, FpsOption fps, EncoderOption enc, FormatOption fmt,
+                                    int bitrateBps, int orientationHint, boolean withAudio, int durationMs,
+                                    int afMode, boolean manualFocus, float focusDistance) {
         CameraManager cm = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
         MediaRecorder recorder = null;
         CameraDevice camera = null;
@@ -511,6 +655,9 @@ public class MainActivity extends Activity {
         String outDisplay = "/storage/emulated/0/DCIM/Camera";
         StringBuilder log = new StringBuilder();
         boolean success = false;
+        liveMetaEnabled = true;
+        lastMetaUiMs.set(0);
+        postLiveMeta("Preparing test...");
         try {
             log.append("Step: create output in /storage/emulated/0/DCIM/Camera/ (MediaStore)\n");
             String mime = "video/mp4";
@@ -533,9 +680,7 @@ public class MainActivity extends Activity {
 
             log.append("Step: configure MediaRecorder\n");
             recorder = new MediaRecorder();
-            if (withAudio) {
-                recorder.setAudioSource(MediaRecorder.AudioSource.CAMCORDER);
-            }
+            if (withAudio) recorder.setAudioSource(MediaRecorder.AudioSource.CAMCORDER);
             recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
             recorder.setOutputFormat(fmt.code);
             recorder.setVideoEncoder(enc.code);
@@ -549,7 +694,10 @@ public class MainActivity extends Activity {
             }
             recorder.setOutputFile(outPfd.getFileDescriptor());
             try { recorder.setOrientationHint(orientationHint); } catch (Throwable ignored) {}
-            log.append("  orientationHint=").append(orientationHint).append(" bitrateBps=").append(bitrateBps).append("\n");
+            log.append("  orientationHint=").append(orientationHint).append(" bitrateBps=").append(bitrateBps)
+               .append(" durationMs=").append(durationMs).append("\n");
+            log.append("  afMode=").append(afMode).append(" manualFocus=").append(manualFocus)
+               .append(" focusDistance=").append(focusDistance).append("\n");
             log.append("Step: prepare MediaRecorder\n");
             recorder.prepare();
             Surface recorderSurface = recorder.getSurface();
@@ -576,18 +724,34 @@ public class MainActivity extends Activity {
             b.addTarget(previewSurface);
             b.addTarget(recorderSurface);
             try { b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO); } catch (Throwable ignored) {}
-            try {
-                b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<Integer>(fps.fps, fps.fps));
-            } catch (Throwable t) {
-                log.append("Note: could not set exact FPS range: ").append(t.getMessage()).append("\n");
+            try { b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON); } catch (Throwable ignored) {}
+            try { b.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO); } catch (Throwable ignored) {}
+            try { b.set(CaptureRequest.CONTROL_AF_MODE, afMode); } catch (Throwable t) { log.append("Note: set AF mode failed: ").append(t.getMessage()).append("\n"); }
+            if (manualFocus) {
+                try { b.set(CaptureRequest.LENS_FOCUS_DISTANCE, focusDistance); } catch (Throwable t) { log.append("Note: set focus distance failed: ").append(t.getMessage()).append("\n"); }
             }
-            session.setRepeatingRequest(b.build(), null, cameraHandler);
+            try { b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<Integer>(fps.fps, fps.fps)); } catch (Throwable t) { log.append("Note: could not set exact FPS range: ").append(t.getMessage()).append("\n"); }
+
+            postLiveMeta("Session configured, starting repeating request...");
+            CameraCaptureSession.CaptureCallback cb = new CameraCaptureSession.CaptureCallback() {
+                @Override public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
+                    handleLiveMeta(result);
+                }
+                @Override public void onCaptureProgressed(CameraCaptureSession session, CaptureRequest request, CaptureResult partialResult) {
+                    // optional, lighter updates if desired
+                }
+                @Override public void onCaptureFailed(CameraCaptureSession session, CaptureRequest request, CaptureFailure failure) {
+                    postLiveMeta("Capture failed: reason=" + failure.getReason());
+                }
+            };
+            session.setRepeatingRequest(b.build(), cb, cameraHandler);
 
             log.append("Step: MediaRecorder.start()\n");
             recorder.start();
-            log.append("Step: recording ~1500ms\n");
-            sleepQuiet(1500);
+            log.append("Step: recording ~").append(durationMs).append("ms\n");
+            sleepQuiet(durationMs);
 
+            liveMetaEnabled = false;
             log.append("Step: stop recorder\n");
             try { recorder.stop(); } catch (Throwable t) { log.append("stop warning: ").append(t).append("\n"); }
             log.append("Step: close session/camera\n");
@@ -613,12 +777,13 @@ public class MainActivity extends Activity {
                 }
             }
             log.append("\nSUCCESS. Stored video: ").append(outDisplay).append("\n");
+            postLiveMeta("Idle (test finished OK)");
             success = true;
             return new TestOutcome(true, log.toString());
         } catch (Throwable t) {
+            liveMetaEnabled = false;
             log.append("\nFAILED: ").append(t.getClass().getName()).append(": ").append(t.getMessage()).append("\n");
             log.append(stackTrace(t));
-            // cleanup best-effort
             try { if (session != null) session.close(); } catch (Throwable ignored) {}
             try { if (camera != null) camera.close(); } catch (Throwable ignored) {}
             try { if (recorder != null) { try { recorder.stop(); } catch (Throwable ignored) {} recorder.reset(); recorder.release(); } } catch (Throwable ignored) {}
@@ -629,7 +794,100 @@ public class MainActivity extends Activity {
                 try { getContentResolver().delete(outUri, null, null); } catch (Throwable ignored) {}
             }
             openedSession = null; openedCamera = null;
+            postLiveMeta("Idle (test failed)");
             return new TestOutcome(false, log.toString());
+        }
+    }
+
+    private void handleLiveMeta(CaptureResult r) {
+        if (!liveMetaEnabled || r == null) return;
+        long now = System.currentTimeMillis();
+        long prev = lastMetaUiMs.get();
+        if (now - prev < 150) return; // throttle ~6-7 Hz, update in place (no spam)
+        if (!lastMetaUiMs.compareAndSet(prev, now)) return;
+        try {
+            StringBuilder sb = new StringBuilder();
+            Integer afMode = r.get(CaptureResult.CONTROL_AF_MODE);
+            Integer afState = r.get(CaptureResult.CONTROL_AF_STATE);
+            Float lensDist = r.get(CaptureResult.LENS_FOCUS_DISTANCE);
+            Integer lensState = r.get(CaptureResult.LENS_STATE);
+            Integer aeMode = r.get(CaptureResult.CONTROL_AE_MODE);
+            Integer aeState = r.get(CaptureResult.CONTROL_AE_STATE);
+            Integer awbMode = r.get(CaptureResult.CONTROL_AWB_MODE);
+            Integer awbState = r.get(CaptureResult.CONTROL_AWB_STATE);
+            Long exp = r.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+            Integer iso = r.get(CaptureResult.SENSOR_SENSITIVITY);
+            Long fdur = r.get(CaptureResult.SENSOR_FRAME_DURATION);
+            Float aperture = r.get(CaptureResult.LENS_APERTURE);
+            Long ts = r.get(CaptureResult.SENSOR_TIMESTAMP);
+
+            sb.append("AF mode=").append(afMode).append(" state=").append(afStateName(afState)).append("\n");
+            sb.append("Lens focusDist=").append(fmtFloat(lensDist)).append("d state=").append(lensStateName(lensState)).append("\n");
+            sb.append("AE mode=").append(aeMode).append(" state=").append(aeStateName(aeState))
+              .append(" AWB mode=").append(awbMode).append(" state=").append(awbStateName(awbState)).append("\n");
+            if (exp != null) sb.append("Exposure=").append(String.format(Locale.US, "%.3fms", exp / 1e6)).append(" (").append(exp).append("ns)");
+            if (iso != null) sb.append(" ISO=").append(iso);
+            sb.append("\n");
+            if (fdur != null && fdur > 0) sb.append("FrameDur=").append(String.format(Locale.US, "%.3fms", fdur / 1e6)).append(" (~").append(String.format(Locale.US, "%.1f", 1e9 / fdur)).append(" fps)");
+            if (aperture != null) sb.append(" Aperture=f/").append(fmtFloat(aperture));
+            sb.append("\n");
+            if (ts != null) sb.append("Timestamp=").append(ts);
+            postLiveMeta(sb.toString());
+        } catch (Throwable t) {
+            postLiveMeta("Live meta error: " + t.getMessage());
+        }
+    }
+
+    private void postLiveMeta(final String text) {
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                if (liveMetaText != null) liveMetaText.setText(text);
+            }
+        });
+    }
+
+    private static String fmtFloat(Float f) { return f == null ? "n/a" : String.format(Locale.US, "%.3f", f); }
+    private static String afStateName(Integer s) {
+        if (s == null) return "n/a";
+        switch (s) {
+            case CaptureResult.CONTROL_AF_STATE_INACTIVE: return "INACTIVE";
+            case CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN: return "PASSIVE_SCAN";
+            case CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED: return "PASSIVE_FOCUSED";
+            case CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN: return "ACTIVE_SCAN";
+            case CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED: return "FOCUSED_LOCKED";
+            case CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED: return "NOT_FOCUSED_LOCKED";
+            case CaptureResult.CONTROL_AF_STATE_PASSIVE_UNFOCUSED: return "PASSIVE_UNFOCUSED";
+            default: return String.valueOf(s);
+        }
+    }
+    private static String aeStateName(Integer s) {
+        if (s == null) return "n/a";
+        switch (s) {
+            case CaptureResult.CONTROL_AE_STATE_INACTIVE: return "INACTIVE";
+            case CaptureResult.CONTROL_AE_STATE_SEARCHING: return "SEARCHING";
+            case CaptureResult.CONTROL_AE_STATE_CONVERGED: return "CONVERGED";
+            case CaptureResult.CONTROL_AE_STATE_LOCKED: return "LOCKED";
+            case CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED: return "FLASH_REQUIRED";
+            case CaptureResult.CONTROL_AE_STATE_PRECAPTURE: return "PRECAPTURE";
+            default: return String.valueOf(s);
+        }
+    }
+    private static String awbStateName(Integer s) {
+        if (s == null) return "n/a";
+        switch (s) {
+            case CaptureResult.CONTROL_AWB_STATE_INACTIVE: return "INACTIVE";
+            case CaptureResult.CONTROL_AWB_STATE_SEARCHING: return "SEARCHING";
+            case CaptureResult.CONTROL_AWB_STATE_CONVERGED: return "CONVERGED";
+            case CaptureResult.CONTROL_AWB_STATE_LOCKED: return "LOCKED";
+            default: return String.valueOf(s);
+        }
+    }
+    private static String lensStateName(Integer s) {
+        if (s == null) return "n/a";
+        switch (s) {
+            case CaptureResult.LENS_STATE_STATIONARY: return "STATIONARY";
+            case CaptureResult.LENS_STATE_MOVING: return "MOVING";
+            default: return String.valueOf(s);
         }
     }
 
@@ -637,15 +895,11 @@ public class MainActivity extends Activity {
         final CountDownLatch latch = new CountDownLatch(1);
         final AtomicReference<CameraDevice> ref = new AtomicReference<>();
         final AtomicReference<Throwable> err = new AtomicReference<>();
-        try {
-            cm.openCamera(camId, new CameraDevice.StateCallback() {
-                @Override public void onOpened(CameraDevice camera) { ref.set(camera); latch.countDown(); }
-                @Override public void onDisconnected(CameraDevice camera) { try { camera.close(); } catch (Throwable ignored) {} err.compareAndSet(null, new RuntimeException("Camera disconnected")); latch.countDown(); }
-                @Override public void onError(CameraDevice camera, int error) { try { camera.close(); } catch (Throwable ignored) {} err.compareAndSet(null, new RuntimeException("Camera open error: " + error)); latch.countDown(); }
-            }, cameraHandler);
-        } catch (SecurityException se) {
-            throw se;
-        }
+        cm.openCamera(camId, new CameraDevice.StateCallback() {
+            @Override public void onOpened(CameraDevice camera) { ref.set(camera); latch.countDown(); }
+            @Override public void onDisconnected(CameraDevice camera) { try { camera.close(); } catch (Throwable ignored) {} err.compareAndSet(null, new RuntimeException("Camera disconnected")); latch.countDown(); }
+            @Override public void onError(CameraDevice camera, int error) { try { camera.close(); } catch (Throwable ignored) {} err.compareAndSet(null, new RuntimeException("Camera open error: " + error)); latch.countDown(); }
+        }, cameraHandler);
         if (!latch.await(5, TimeUnit.SECONDS)) throw new RuntimeException("Timeout opening camera");
         if (err.get() != null) throw new RuntimeException(err.get());
         return ref.get();
@@ -680,7 +934,8 @@ public class MainActivity extends Activity {
         resultText.setText(text);
     }
 
-    private String describeConfig(String camId, ResOption res, FpsOption fps, EncoderOption enc, FormatOption fmt, String bitrateLabel, String orientationLabel, boolean withAudio) {
+    private String describeConfig(String camId, ResOption res, FpsOption fps, EncoderOption enc, FormatOption fmt,
+                                  String bitrateLabel, String orientationLabel, boolean withAudio, String durationLabel, String focusLabel) {
         return "Camera=" + camId +
                 "\nResolution=" + res.w + "x" + res.h + (res.supported ? " (supported)" : " (unsupported probe)") +
                 "\nFPS=" + fps.fps + (fps.supported ? " (in-range)" : " (probe)") +
@@ -688,9 +943,156 @@ public class MainActivity extends Activity {
                 "\nFormat=" + fmt.name + " code=" + fmt.code +
                 "\nBitrate=" + bitrateLabel +
                 "\nOrientation=" + orientationLabel +
+                "\nDuration=" + durationLabel +
+                "\nFocus=" + focusLabel +
                 "\nAudio=" + withAudio;
     }
 
+    // ---- Presets ----
+    private SharedPreferences prefs() { return getSharedPreferences(PREFS, MODE_PRIVATE); }
+
+    private JSONObject readPresetsObj() {
+        String raw = prefs().getString(KEY_PRESETS, "{}");
+        try { return new JSONObject(raw); } catch (Exception e) { return new JSONObject(); }
+    }
+
+    private void writePresetsObj(JSONObject obj) {
+        prefs().edit().putString(KEY_PRESETS, obj.toString()).apply();
+    }
+
+    private void refreshPresetSpinner(String selectName) {
+        JSONObject obj = readPresetsObj();
+        presetNames.clear();
+        Iterator<String> keys = obj.keys();
+        while (keys.hasNext()) presetNames.add(keys.next());
+        Collections.sort(presetNames, String.CASE_INSENSITIVE_ORDER);
+        setSpinner(presetSpinner, presetNames);
+        if (selectName != null) {
+            for (int i = 0; i < presetNames.size(); i++) {
+                if (presetNames.get(i).equals(selectName)) { presetSpinner.setSelection(i); break; }
+            }
+        }
+    }
+
+    private void savePreset() {
+        String name = presetNameInput.getText().toString().trim();
+        if (name.isEmpty()) { showResult(false, "Preset name is empty.", null); return; }
+        try {
+            JSONObject p = new JSONObject();
+            String camId = (cameraIds.isEmpty() ? "" : cameraIds.get(Math.max(0, Math.min(cameraSpinner.getSelectedItemPosition(), cameraIds.size() - 1))));
+            p.put("cameraId", camId);
+            ResOption r = (ResOption) resSpinner.getSelectedItem();
+            if (r != null) { p.put("resW", r.w); p.put("resH", r.h); }
+            FpsOption f = (FpsOption) fpsSpinner.getSelectedItem();
+            if (f != null) p.put("fps", f.fps);
+            p.put("encoderIdx", encoderSpinner.getSelectedItemPosition());
+            p.put("formatIdx", formatSpinner.getSelectedItemPosition());
+            p.put("bitrateIdx", bitrateSpinner.getSelectedItemPosition());
+            p.put("customMbps", bitrateMbpsInput.getText().toString().trim());
+            p.put("orientationIdx", orientationSpinner.getSelectedItemPosition());
+            p.put("durationSec", durationSecInput.getText().toString().trim());
+            p.put("focusModeIdx", focusModeSpinner.getSelectedItemPosition());
+            p.put("focusDistProgress", focusDistSeek.getProgress());
+            p.put("audio", cbAudio.isChecked());
+            JSONObject all = readPresetsObj();
+            all.put(name, p);
+            writePresetsObj(all);
+            refreshPresetSpinner(name);
+            resultText.setBackgroundColor(0xFF000000);
+            resultText.setTextColor(0xFF80FF80);
+            resultText.setText("Preset saved: " + name);
+        } catch (Exception e) {
+            showResult(false, "Failed to save preset", e);
+        }
+    }
+
+    private void loadSelectedPreset() {
+        if (presetNames.isEmpty()) { showResult(false, "No presets saved.", null); return; }
+        int idx = presetSpinner.getSelectedItemPosition();
+        if (idx < 0 || idx >= presetNames.size()) { showResult(false, "No preset selected.", null); return; }
+        String name = presetNames.get(idx);
+        try {
+            JSONObject all = readPresetsObj();
+            JSONObject p = all.optJSONObject(name);
+            if (p == null) { showResult(false, "Preset not found: " + name, null); return; }
+            applyPreset(p);
+            presetNameInput.setText(name);
+            resultText.setBackgroundColor(0xFF000000);
+            resultText.setTextColor(0xFF80FF80);
+            resultText.setText("Preset loaded: " + name);
+        } catch (Exception e) {
+            showResult(false, "Failed to load preset", e);
+        }
+    }
+
+    private void renameSelectedPreset() {
+        if (presetNames.isEmpty()) { showResult(false, "No presets saved.", null); return; }
+        int idx = presetSpinner.getSelectedItemPosition();
+        if (idx < 0 || idx >= presetNames.size()) { showResult(false, "No preset selected.", null); return; }
+        String oldName = presetNames.get(idx);
+        String newName = presetNameInput.getText().toString().trim();
+        if (newName.isEmpty()) { showResult(false, "New preset name is empty.", null); return; }
+        if (oldName.equals(newName)) { showResult(false, "New name is the same as old name.", null); return; }
+        try {
+            JSONObject all = readPresetsObj();
+            JSONObject p = all.optJSONObject(oldName);
+            if (p == null) { showResult(false, "Preset not found: " + oldName, null); return; }
+            all.remove(oldName);
+            all.put(newName, p);
+            writePresetsObj(all);
+            refreshPresetSpinner(newName);
+            resultText.setBackgroundColor(0xFF000000);
+            resultText.setTextColor(0xFF80FF80);
+            resultText.setText("Preset renamed: " + oldName + " -> " + newName);
+        } catch (Exception e) {
+            showResult(false, "Failed to rename preset", e);
+        }
+    }
+
+    private void applyPreset(JSONObject p) {
+        // camera
+        String camId = p.optString("cameraId", "");
+        if (camId != null && !camId.isEmpty()) {
+            for (int i = 0; i < cameraIds.size(); i++) {
+                if (camId.equals(cameraIds.get(i))) { cameraSpinner.setSelection(i); break; }
+            }
+        }
+        // resolution
+        if (p.has("resW") && p.has("resH")) {
+            int w = p.optInt("resW", -1), h = p.optInt("resH", -1);
+            int found = -1;
+            for (int i = 0; i < resOptions.size(); i++) {
+                ResOption ro = resOptions.get(i);
+                if (ro.w == w && ro.h == h) { found = i; break; }
+            }
+            if (found >= 0) resSpinner.setSelection(found);
+        }
+        // fps
+        if (p.has("fps")) {
+            int fps = p.optInt("fps", -1);
+            for (int i = 0; i < fpsOptions.size(); i++) {
+                if (fpsOptions.get(i).fps == fps) { fpsSpinner.setSelection(i); break; }
+            }
+        }
+        setSel(encoderSpinner, p.optInt("encoderIdx", -1), encoderOptions.size());
+        setSel(formatSpinner, p.optInt("formatIdx", -1), formatOptions.size());
+        setSel(bitrateSpinner, p.optInt("bitrateIdx", -1), bitrateOptions.size());
+        bitrateMbpsInput.setText(p.optString("customMbps", ""));
+        setSel(orientationSpinner, p.optInt("orientationIdx", -1), orientationOptions.size());
+        durationSecInput.setText(p.optString("durationSec", "2.0"));
+        setSel(focusModeSpinner, p.optInt("focusModeIdx", -1), focusModeOptions.size());
+        int fp = p.optInt("focusDistProgress", focusDistSeek.getMax());
+        if (fp < 0) fp = 0; if (fp > focusDistSeek.getMax()) fp = focusDistSeek.getMax();
+        focusDistSeek.setProgress(fp);
+        cbAudio.setChecked(p.optBoolean("audio", false));
+        updateFocusDistLabel();
+    }
+
+    private void setSel(Spinner sp, int idx, int size) {
+        if (idx >= 0 && idx < size) sp.setSelection(idx);
+    }
+
+    // ---- utils ----
     private static String stackTrace(Throwable t) {
         StringWriter sw = new StringWriter();
         t.printStackTrace(new PrintWriter(sw));
@@ -703,6 +1105,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        liveMetaEnabled = false;
         try { if (openedSession != null) openedSession.close(); } catch (Throwable ignored) {}
         try { if (openedCamera != null) openedCamera.close(); } catch (Throwable ignored) {}
         if (cameraThread != null) {

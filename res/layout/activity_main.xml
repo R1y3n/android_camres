@@ -78,6 +78,36 @@
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Orientation (horizontal/vertical):" />
         <Spinner android:id="@+id/orientation_spinner" android:layout_width="match_parent" android:layout_height="wrap_content" />
 
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Recording duration (seconds):" />
+        <EditText
+            android:id="@+id/duration_sec"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="numberDecimal"
+            android:hint="e.g. 2.0"
+            android:text="2.0" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Focus mode (auto / manual):" />
+        <Spinner android:id="@+id/focus_mode_spinner" android:layout_width="match_parent" android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/focus_dist_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Manual focus distance (close ← → far, diopters): 0.00" />
+        <SeekBar
+            android:id="@+id/focus_dist_seek"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="1000" />
+        <TextView
+            android:id="@+id/focus_info_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="12sp"
+            android:typeface="monospace"
+            android:text="Focus range: scan camera to see supported modes/distances." />
+
         <CheckBox
             android:id="@+id/cb_audio"
             android:layout_width="match_parent"
@@ -85,11 +115,89 @@
             android:text="Include audio (RECORD_AUDIO)"
             android:checked="false" />
 
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#888888"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Presets (save / load / rename)"
+            android:textStyle="bold" />
+
+        <Spinner
+            android:id="@+id/preset_spinner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <EditText
+            android:id="@+id/preset_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Preset name" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_preset_save"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Save" />
+
+            <Button
+                android:id="@+id/btn_preset_load"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Load" />
+
+            <Button
+                android:id="@+id/btn_preset_rename"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Rename" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#888888"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="8dp" />
+
         <Button
             android:id="@+id/btn_test"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Test selected configuration" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Live sensor metadata (updates in place)"
+            android:textStyle="bold"
+            android:paddingTop="8dp" />
+
+        <TextView
+            android:id="@+id/live_meta_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="90dp"
+            android:padding="8dp"
+            android:textIsSelectable="true"
+            android:typeface="monospace"
+            android:textSize="12sp"
+            android:background="#102030"
+            android:textColor="#A0E0FF"
+            android:text="Idle" />
 
         <TextView
             android:id="@+id/result_text"

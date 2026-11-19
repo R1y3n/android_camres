@@ -13,6 +13,7 @@ Built as a **0-Gradle** project (pure Android SDK command-line tools), targeting
   - Sample output min-frame durations (~max fps)
   - `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES`
   - `CamcorderProfile` entries (LOW/HIGH/QCIF/CIF/480P/720P/1080P/QVGA/2160P) with size, fps, bitrate, and codec when available
+  - **Focus/lens & auto info** — min/hyperfocal focus distance, available AF/AE modes, ISO & exposure ranges, OIS/video stabilization modes (when reported)
 - **Test any video configuration** — pick from reported-supported **and** probe/unsupported options:
   - **Resolution (WxH)** — common presets plus device-reported sizes
   - **FPS** — common frame rates plus range-derived values
@@ -20,8 +21,12 @@ Built as a **0-Gradle** project (pure Android SDK command-line tools), targeting
   - **Output format** — MP4, 3GP, WebM
   - **Bitrate** — preset Mbps values **or** a custom bitrate in **Mbps** (overrides preset)
   - **Orientation** — Horizontal/Landscape (0°/180°) or Vertical/Portrait (90°/270°) via `MediaRecorder.setOrientationHint`
+  - **Recording duration** — custom length in seconds
+  - **Focus control** — AF mode (Auto, Continuous Video/Picture, Macro, EDOF, OFF) and **manual focus distance** (close ↔ far, diopters) when supported by the lens
   - **Audio** — optional (requests `RECORD_AUDIO`)
-- **Real end-to-end test** — configures `MediaRecorder` (`VideoSource.SURFACE`) + a Camera2 capture session and records briefly.
+- **Live sensor metadata window** — during a test, displays **real-time, in-place** (non-spamming) capture metadata: AF/AE/AWB mode & state, lens focus distance/state, exposure time, ISO, frame duration (~fps), aperture, timestamp.
+- **Presets** — **save**, **load**, and **rename** named presets of test parameters for quick reuse.
+- **Real end-to-end test** — configures `MediaRecorder` (`VideoSource.SURFACE`) + a Camera2 capture session and records for the chosen duration.
 - **Crash-safe fallback** — every test step runs off the UI thread with exceptions/callback errors caught; failures are reported as `FAILURE / FALLBACK` in a persistent **black-background** monospace panel with a step log and stack trace, and resources are cleaned up best-effort.
 - **Stores test recordings** — successful test clips are saved by default to **`/storage/emulated/0/DCIM/Camera/`** (`CamRes_test_<ts>_<WxH>_<fps>fps.<ext>`) via `MediaStore` (scoped-storage friendly on Android 12). Incomplete entries from failed tests are removed best-effort.
 
@@ -63,9 +68,9 @@ Or download the debug APK from [Releases](../../releases).
 ## Usage
 
 1. Grant **Camera** (and **Microphone** if you enable audio).
-2. Select a camera and tap **Scan supported video capabilities** to view reported sizes, FPS ranges, and camcorder profiles.
-3. Choose a resolution, FPS, encoder, output format, bitrate (preset or custom **Mbps**), orientation (horizontal/vertical), and audio option — including **unsupported probe** values.
-4. Tap **Test selected configuration**. The result panel (black background) shows success or a detailed fallback error log. Successful recordings are stored in **DCIM/Camera**.
+2. Select a camera and tap **Scan supported video capabilities** to view reported sizes, FPS ranges, camcorder profiles, and focus/lens/AE info.
+3. Choose a resolution, FPS, encoder, output format, bitrate (preset or custom **Mbps**), orientation (horizontal/vertical), **duration (s)**, **focus mode & manual focus distance** (close↔far), and audio option — including **unsupported probe** values. Save/load/rename **presets** as needed.
+4. Tap **Test selected configuration**. Watch **live sensor metadata** update in place during recording; the result panel (black background) shows success or a detailed fallback error log. Successful recordings are stored in **DCIM/Camera**.
 
 ## Project structure
 
