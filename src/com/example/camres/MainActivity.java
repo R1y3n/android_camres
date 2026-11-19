@@ -295,7 +295,16 @@ public class MainActivity extends Activity {
     private void updateFocusDistLabel() {
         float dist = getSelectedFocusDistance();
         String extra = (currentMinFocusDistance <= 0f) ? " (fixed-focus or unknown range)" : " of max " + String.format(Locale.US, "%.3f", currentMinFocusDistance);
-        String cal = (calibratedFurthestDiopter != null) ? " | calibrated furthest=" + String.format(Locale.US, "%.3f", calibratedFurthestDiopter) + "d" : "";
+        String cal = "";
+        if (calibratedFurthestDiopter != null) {
+            float cd = calibratedFurthestDiopter;
+            if (currentMinFocusDistance > 0f) {
+                double ratio = (double) cd / (double) currentMinFocusDistance;
+                cal = String.format(Locale.US, " | calibrated furthest=%.8fd (%.8f/200 of %.4fd)", cd, ratio * 200.0, currentMinFocusDistance);
+            } else {
+                cal = String.format(Locale.US, " | calibrated furthest=%.8fd", cd);
+            }
+        }
         focusDistLabel.setText("Manual focus distance (close ← → far, diopters): " + String.format(Locale.US, "%.3f", dist) + extra + cal);
     }
 
@@ -331,7 +340,7 @@ public class MainActivity extends Activity {
         if (tabHqIsp != null) tabHqIsp.setEnabled(!hq);
         if (modeInfoText != null) {
             if (hq) {
-                modeInfoText.setText("Mode: HQ ISP (special test tab) — CaptureRequest from TEMPLATE_RECORD; forced NOISE_REDUCTION_MODE_HIGH_QUALITY + TONEMAP_MODE_HIGH_QUALITY (public ISP pipeline), overrides default fast mode. Other params/presets shared.");
+                modeInfoText.setText("Mode: HQ ISP (special test tab) — CaptureRequest from TEMPLATE_RECORD; forced NOISE_REDUCTION_MODE_HIGH_QUALITY + EDGE_MODE_HIGH_QUALITY + TONEMAP_MODE_HIGH_QUALITY (public ISP pipeline), overrides default fast mode. Other params/presets shared.");
             } else {
                 modeInfoText.setText("Mode: Standard test (TEMPLATE_RECORD).");
             }
@@ -794,6 +803,10 @@ public class MainActivity extends Activity {
                     log.append("  HQ ISP: NOISE_REDUCTION_MODE_HIGH_QUALITY set\n");
                 } catch (Throwable t) { log.append("  HQ ISP: set NOISE_REDUCTION_MODE failed: ").append(t.getMessage()).append("\n"); }
                 try {
+                    b.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY);
+                    log.append("  HQ ISP: EDGE_MODE_HIGH_QUALITY set (preserves fine detail with NR_HQ)\n");
+                } catch (Throwable t) { log.append("  HQ ISP: set EDGE_MODE failed: ").append(t.getMessage()).append("\n"); }
+                try {
                     b.set(CaptureRequest.TONEMAP_MODE, CaptureRequest.TONEMAP_MODE_HIGH_QUALITY);
                     log.append("  HQ ISP: TONEMAP_MODE_HIGH_QUALITY set\n");
                 } catch (Throwable t) { log.append("  HQ ISP: set TONEMAP_MODE failed: ").append(t.getMessage()).append("\n"); }
@@ -1005,7 +1018,7 @@ public class MainActivity extends Activity {
     private String describeConfig(String camId, ResOption res, FpsOption fps, EncoderOption enc, FormatOption fmt,
                                   String bitrateLabel, String orientationLabel, boolean withAudio, String durationLabel, String focusLabel, boolean hqIsp) {
         return "Camera=" + camId +
-                "\nMode=" + (hqIsp ? "HQ ISP (TEMPLATE_RECORD, NR_HQ, TONEMAP_HQ)" : "Standard (TEMPLATE_RECORD)") +
+                "\nMode=" + (hqIsp ? "HQ ISP (TEMPLATE_RECORD, NR_HQ, EDGE_HQ, TONEMAP_HQ)" : "Standard (TEMPLATE_RECORD)") +
                 "\nResolution=" + res.w + "x" + res.h + (res.supported ? " (supported)" : " (unsupported probe)") +
                 "\nFPS=" + fps.fps + (fps.supported ? " (in-range)" : " (probe)") +
                 "\nEncoder=" + enc.name + " code=" + enc.code +
@@ -1194,7 +1207,10 @@ public class MainActivity extends Activity {
                                 updateFocusDistLabel();
                                 resultText.setTextColor(0xFF80FF80);
                                 resultText.setText("SUCCESS\nFurthest (calibrated) locked.\n" + cr.message);
-                                liveMetaText.setText("Furthest locked @ " + String.format(Locale.US, "%.3f", cr.diopter) + " diopters");
+                                String measShort = (currentMinFocusDistance > 0f)
+                                        ? String.format(Locale.US, "%.8fd (%.8f/200 of %.4fd)", cr.diopter, (cr.diopter / currentMinFocusDistance) * 200.0, currentMinFocusDistance)
+                                        : String.format(Locale.US, "%.8fd", cr.diopter);
+                                liveMetaText.setText("Furthest locked @ " + measShort);
                             } else {
                                 // fallback: if we got a suggested diopter, still apply it
                                 if (cr.diopter >= 0f) {
@@ -1360,9 +1376,15 @@ public class MainActivity extends Activity {
                .append(" -> chosen d=").append(fmtF(chosen)).append(" score=").append(String.format(Locale.US, "%.2f", chosenScore)).append("\n");
 
             // safety: avoid commanding exact 0.0 which may overtravel on some lenses
+            float preClamp = chosen;
             if (chosen < minFd * 0.002f) chosen = Math.max(minFd * 0.002f, 0.001f);
             if (chosen > minFd) chosen = minFd;
 
+            String meas = formatCalibrationMeasurement(chosen, minFd, chosenScore, maxScore, threshold);
+            log.append("Measured: ").append(meas).append("\n");
+            if (Math.abs(preClamp - chosen) > 1e-6f) {
+                log.append("Safety-clamped to: ").append(fmtF(chosen)).append("d (from ").append(fmtF(preClamp)).append("d)\n");
+            }
             log.append("Chosen furthest (calibrated/locked)=").append(fmtF(chosen)).append(" diopters\n");
             return new CalibResult(true, chosen, log.toString());
         } catch (Throwable t) {
@@ -1391,7 +1413,17 @@ public class MainActivity extends Activity {
         return Math.max(minFd * 0.02f, 0.001f);
     }
 
-    private static String fmtF(float f) { return String.format(Locale.US, "%.4f", f); }
+    private static String fmtF(float f) { return String.format(Locale.US, "%.8f", f); }
+
+    private String formatCalibrationMeasurement(float chosenD, float minFd, double chosenScore, double maxScore, double threshold) {
+        if (minFd <= 0f) return fmtF(chosenD) + "d (fixed-focus)";
+        double ratio = (double) chosenD / (double) minFd; // fraction of minFocusDistance range
+        double num200 = ratio * 200.0; // e.g. 0.0625 -> 12.5/200
+        double num1000 = ratio * 1000.0; // seekbar-scale fraction
+        return String.format(Locale.US,
+                "%.8fd = %.8f/200 of minFocusDistance %.8fd (ratio=%.8f, %.4f%% of range, seek ~%.2f/1000) | sharpness=%.2f (max=%.2f, thr=%.2f)",
+                chosenD, num200, minFd, ratio, ratio * 100.0, num1000, chosenScore, maxScore, threshold);
+    }
 
     private Size chooseSmallYuvSize(StreamConfigurationMap map) {
         if (map == null) return null;

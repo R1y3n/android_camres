@@ -16,7 +16,7 @@ Built as a **0-Gradle** project (pure Android SDK command-line tools), targeting
   - **Focus/lens & auto info** — min/hyperfocal focus distance, available AF/AE modes, ISO & exposure ranges, OIS/video stabilization modes (when reported)
 - **Test modes (tabs)**:
   - **Standard** — normal test using `CameraDevice.TEMPLATE_RECORD`.
-  - **HQ ISP** (special test tab) — forces public ISP pipeline to high-quality (overrides default fast mode) on `TEMPLATE_RECORD` by setting `NOISE_REDUCTION_MODE_HIGH_QUALITY` and `TONEMAP_MODE_HIGH_QUALITY` (useful on hardware level 3 devices where OEM/private vendor tags are unavailable). Other params and saved presets are shared.
+  - **HQ ISP** (special test tab) — forces public ISP pipeline to high-quality (overrides default fast mode) on `TEMPLATE_RECORD` by setting `NOISE_REDUCTION_MODE_HIGH_QUALITY`, `EDGE_MODE_HIGH_QUALITY`, and `TONEMAP_MODE_HIGH_QUALITY` (EDGE_HQ paired with NR_HQ helps preserve fine detail; useful on hardware level 3 devices where OEM/private vendor tags are unavailable). Other params and saved presets are shared.
 - **Test any video configuration** — pick from reported-supported **and** probe/unsupported options:
   - **Resolution (WxH)** — common presets plus device-reported sizes
   - **FPS** — common frame rates plus range-derived values
@@ -25,7 +25,7 @@ Built as a **0-Gradle** project (pure Android SDK command-line tools), targeting
   - **Bitrate** — preset Mbps values **or** a custom bitrate in **Mbps** (overrides preset)
   - **Orientation** — Horizontal/Landscape (0°/180°) or Vertical/Portrait (90°/270°) via `MediaRecorder.setOrientationHint`
   - **Recording duration** — custom length in seconds
-  - **Focus control** — AF mode (Auto, Continuous Video/Picture, Macro, EDOF, OFF) and **manual focus distance** (close ↔ far, diopters) when supported by the lens, plus **Furthest (calibrate & lock)**: self-calibrates by sweeping focus and measuring sharpness (point at a distant detailed scene) to lock the furthest *non-blurry* distance, avoiding mechanical overtravel past true optical infinity on uncalibrated sensors (with safe hyperfocal/offset fallback; far end avoids commanding exact 0.0)
+  - **Focus control** — AF mode (Auto, Continuous Video/Picture, Macro, EDOF, OFF) and **manual focus distance** (close ↔ far, diopters) when supported by the lens, plus **Furthest (calibrate & lock)**: self-calibrates by sweeping focus and measuring sharpness (point at a distant detailed scene) to lock the furthest *non-blurry* distance, avoiding mechanical overtravel past true optical infinity on uncalibrated sensors (with safe hyperfocal/offset fallback; far end avoids commanding exact 0.0). Calibration reports how the value was measured (e.g. diopters and `x/200` of `minFocusDistance` range, sharpness/threshold).
   - **Audio** — optional (requests `RECORD_AUDIO`)
 - **Live sensor metadata window** — during a test, displays **real-time, in-place** (non-spamming) capture metadata: AF/AE/AWB mode & state, lens focus distance/state, exposure time, ISO, frame duration (~fps), aperture, timestamp.
 - **Presets** — **save**, **load**, and **rename** named presets of test parameters for quick reuse.
