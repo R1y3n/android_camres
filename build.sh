@@ -74,11 +74,12 @@ CLASS_FILES=( $(find build/obj -name '*.class' | sort) )
 
 echo "==> Package APK (max deflate compression)"
 # base APK from aapt2 link contains resources.arsc, manifest, res; repack with dex at -9
+# resources.arsc must be STORED (uncompressed) and 4-byte aligned for targetSdk >= 30 (R+)
 rm -rf build/pkg
 mkdir -p build/pkg
 unzip -q "$PKG_APK" -d build/pkg
 cp build/apk/classes.dex build/pkg/classes.dex
-( cd build/pkg && zip -qr9 "$ROOT/$OUT_APK" . )
+( cd build/pkg && zip -qr9 "$ROOT/$OUT_APK" . -x resources.arsc && zip -q0 "$ROOT/$OUT_APK" resources.arsc )
 
 echo "==> Zipalign"
 "$ZIPALIGN" -f -p 4 "$OUT_APK" "$ALIGNED_APK"
