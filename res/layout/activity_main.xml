@@ -49,6 +49,41 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:text="Test mode"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingBottom="4dp">
+
+            <Button
+                android:id="@+id/tab_standard"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Standard" />
+
+            <Button
+                android:id="@+id/tab_hq_isp"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="HQ ISP" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/mode_info_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="12sp"
+            android:paddingBottom="4dp"
+            android:text="Mode: Standard test (TEMPLATE_RECORD)." />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:text="Test video configuration (supported or unsupported)"
             android:textStyle="bold" />
 

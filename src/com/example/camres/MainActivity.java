@@ -85,6 +85,10 @@ public class MainActivity extends Activity {
     private TextView liveMetaText;
     private Spinner presetSpinner;
     private EditText presetNameInput;
+    private Button tabStandard;
+    private Button tabHqIsp;
+    private TextView modeInfoText;
+    private boolean hqIspMode = false;
 
     private final List<String> cameraIds = new ArrayList<>();
     private HandlerThread cameraThread;
@@ -175,6 +179,9 @@ public class MainActivity extends Activity {
         liveMetaText = findViewById(R.id.live_meta_text);
         presetSpinner = findViewById(R.id.preset_spinner);
         presetNameInput = findViewById(R.id.preset_name);
+        tabStandard = findViewById(R.id.tab_standard);
+        tabHqIsp = findViewById(R.id.tab_hq_isp);
+        modeInfoText = findViewById(R.id.mode_info_text);
 
         Button btnScan = findViewById(R.id.btn_scan);
         Button btnTest = findViewById(R.id.btn_test);
@@ -190,6 +197,12 @@ public class MainActivity extends Activity {
         });
         btnFocusFurthest.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { startFurthestCalibration(); }
+        });
+        tabStandard.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { setTestMode(false); }
+        });
+        tabHqIsp.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { setTestMode(true); }
         });
         btnPresetSave.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { savePreset(); }
@@ -209,6 +222,7 @@ public class MainActivity extends Activity {
 
         initStaticOptions();
         refreshPresetSpinner(null);
+        setTestMode(false);
         ensurePermissionsAndLoadCameras();
     }
 
@@ -309,6 +323,19 @@ public class MainActivity extends Activity {
         ArrayAdapter<T> ad = new ArrayAdapter<T>(this, android.R.layout.simple_spinner_item, items);
         ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         sp.setAdapter(ad);
+    }
+
+    private void setTestMode(boolean hq) {
+        hqIspMode = hq;
+        if (tabStandard != null) tabStandard.setEnabled(hq); // enable other tab button
+        if (tabHqIsp != null) tabHqIsp.setEnabled(!hq);
+        if (modeInfoText != null) {
+            if (hq) {
+                modeInfoText.setText("Mode: HQ ISP (special test tab) — CaptureRequest from TEMPLATE_RECORD; forced NOISE_REDUCTION_MODE_HIGH_QUALITY + TONEMAP_MODE_HIGH_QUALITY (public ISP pipeline), overrides default fast mode. Other params/presets shared.");
+            } else {
+                modeInfoText.setText("Mode: Standard test (TEMPLATE_RECORD).");
+            }
+        }
     }
 
     private void ensurePermissionsAndLoadCameras() {
@@ -640,18 +667,19 @@ public class MainActivity extends Activity {
         final int afModeFinal = focusMode.afMode;
         final boolean manualFocusFinal = focusMode.manualDistance;
         final String focusLabelFinal = focusMode.name + (manualFocusFinal ? (" @ " + String.format(Locale.US, "%.3f", focusDistFinal) + "d") : "");
+        final boolean hqIspFinal = hqIspMode;
 
         resultText.setBackgroundColor(0xFF000000);
         resultText.setTextColor(0xFFFFFFFF);
         liveMetaText.setText("Starting...");
-        final String configDesc = describeConfig(camId, res, fps, enc, fmt, bitrateLabelFinal, orientationLabelFinal, withAudio, durationLabel, focusLabelFinal);
+        final String configDesc = describeConfig(camId, res, fps, enc, fmt, bitrateLabelFinal, orientationLabelFinal, withAudio, durationLabel, focusLabelFinal, hqIspFinal);
         resultText.setText("Testing...\n" + configDesc);
 
         startCameraThread();
         new Thread(new Runnable() {
             @Override public void run() {
                 try {
-                    TestOutcome out = performTest(camId, res, fps, enc, fmt, bitrateBpsFinal, orientationHintFinal, withAudio, durationMsFinal, afModeFinal, manualFocusFinal, focusDistFinal);
+                    TestOutcome out = performTest(camId, res, fps, enc, fmt, bitrateBpsFinal, orientationHintFinal, withAudio, durationMsFinal, afModeFinal, manualFocusFinal, focusDistFinal, hqIspFinal);
                     final String msg = configDesc + "\n\n" + out.message;
                     runOnUiThread(new Runnable() {
                         @Override public void run() { showResult(out.success, msg, null); }
@@ -671,7 +699,7 @@ public class MainActivity extends Activity {
 
     private TestOutcome performTest(String camId, ResOption res, FpsOption fps, EncoderOption enc, FormatOption fmt,
                                     int bitrateBps, int orientationHint, boolean withAudio, int durationMs,
-                                    int afMode, boolean manualFocus, float focusDistance) {
+                                    int afMode, boolean manualFocus, float focusDistance, boolean hqIsp) {
         CameraManager cm = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
         MediaRecorder recorder = null;
         CameraDevice camera = null;
@@ -748,6 +776,7 @@ public class MainActivity extends Activity {
             openedSession = session;
 
             log.append("Step: build capture request\n");
+            // TEMPLATE_RECORD (not TEMPLATE_PREVIEW) to favor recording/ISP pipeline for video
             CaptureRequest.Builder b = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
             b.addTarget(previewSurface);
             b.addTarget(recorderSurface);
@@ -757,6 +786,17 @@ public class MainActivity extends Activity {
             try { b.set(CaptureRequest.CONTROL_AF_MODE, afMode); } catch (Throwable t) { log.append("Note: set AF mode failed: ").append(t.getMessage()).append("\n"); }
             if (manualFocus) {
                 try { b.set(CaptureRequest.LENS_FOCUS_DISTANCE, focusDistance); } catch (Throwable t) { log.append("Note: set focus distance failed: ").append(t.getMessage()).append("\n"); }
+            }
+            if (hqIsp) {
+                // HQ ISP special tab: force public ISP pipeline to high-quality (override fast defaults)
+                try {
+                    b.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY);
+                    log.append("  HQ ISP: NOISE_REDUCTION_MODE_HIGH_QUALITY set\n");
+                } catch (Throwable t) { log.append("  HQ ISP: set NOISE_REDUCTION_MODE failed: ").append(t.getMessage()).append("\n"); }
+                try {
+                    b.set(CaptureRequest.TONEMAP_MODE, CaptureRequest.TONEMAP_MODE_HIGH_QUALITY);
+                    log.append("  HQ ISP: TONEMAP_MODE_HIGH_QUALITY set\n");
+                } catch (Throwable t) { log.append("  HQ ISP: set TONEMAP_MODE failed: ").append(t.getMessage()).append("\n"); }
             }
             try { b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<Integer>(fps.fps, fps.fps)); } catch (Throwable t) { log.append("Note: could not set exact FPS range: ").append(t.getMessage()).append("\n"); }
 
@@ -963,8 +1003,9 @@ public class MainActivity extends Activity {
     }
 
     private String describeConfig(String camId, ResOption res, FpsOption fps, EncoderOption enc, FormatOption fmt,
-                                  String bitrateLabel, String orientationLabel, boolean withAudio, String durationLabel, String focusLabel) {
+                                  String bitrateLabel, String orientationLabel, boolean withAudio, String durationLabel, String focusLabel, boolean hqIsp) {
         return "Camera=" + camId +
+                "\nMode=" + (hqIsp ? "HQ ISP (TEMPLATE_RECORD, NR_HQ, TONEMAP_HQ)" : "Standard (TEMPLATE_RECORD)") +
                 "\nResolution=" + res.w + "x" + res.h + (res.supported ? " (supported)" : " (unsupported probe)") +
                 "\nFPS=" + fps.fps + (fps.supported ? " (in-range)" : " (probe)") +
                 "\nEncoder=" + enc.name + " code=" + enc.code +

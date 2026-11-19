@@ -72,10 +72,13 @@ CLASS_FILES=( $(find build/obj -name '*.class' | sort) )
 # d8 outputs classes.dex into --output directory
 "$D8" --lib "$PLATFORM" --output build/apk --min-api 21 "${CLASS_FILES[@]}"
 
-echo "==> Package APK"
-# base APK from aapt2 link contains resources.arsc, manifest, res; add dex
-cp "$PKG_APK" "$OUT_APK"
-( cd build/apk && zip -u "../${APP_NAME}.apk" classes.dex >/dev/null )
+echo "==> Package APK (max deflate compression)"
+# base APK from aapt2 link contains resources.arsc, manifest, res; repack with dex at -9
+rm -rf build/pkg
+mkdir -p build/pkg
+unzip -q "$PKG_APK" -d build/pkg
+cp build/apk/classes.dex build/pkg/classes.dex
+( cd build/pkg && zip -qr9 "$ROOT/$OUT_APK" . )
 
 echo "==> Zipalign"
 "$ZIPALIGN" -f -p 4 "$OUT_APK" "$ALIGNED_APK"

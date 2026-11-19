@@ -14,6 +14,9 @@ Built as a **0-Gradle** project (pure Android SDK command-line tools), targeting
   - `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES`
   - `CamcorderProfile` entries (LOW/HIGH/QCIF/CIF/480P/720P/1080P/QVGA/2160P) with size, fps, bitrate, and codec when available
   - **Focus/lens & auto info** — min/hyperfocal focus distance, available AF/AE modes, ISO & exposure ranges, OIS/video stabilization modes (when reported)
+- **Test modes (tabs)**:
+  - **Standard** — normal test using `CameraDevice.TEMPLATE_RECORD`.
+  - **HQ ISP** (special test tab) — forces public ISP pipeline to high-quality (overrides default fast mode) on `TEMPLATE_RECORD` by setting `NOISE_REDUCTION_MODE_HIGH_QUALITY` and `TONEMAP_MODE_HIGH_QUALITY` (useful on hardware level 3 devices where OEM/private vendor tags are unavailable). Other params and saved presets are shared.
 - **Test any video configuration** — pick from reported-supported **and** probe/unsupported options:
   - **Resolution (WxH)** — common presets plus device-reported sizes
   - **FPS** — common frame rates plus range-derived values
@@ -70,7 +73,7 @@ Or download the debug APK from [Releases](../../releases).
 1. Grant **Camera** (and **Microphone** if you enable audio).
 2. Select a camera and tap **Scan supported video capabilities** to view reported sizes, FPS ranges, camcorder profiles, and focus/lens/AE info.
 3. Choose a resolution, FPS, encoder, output format, bitrate (preset or custom **Mbps**), orientation (horizontal/vertical), **duration (s)**, **focus mode & manual focus distance** (close↔far, or use **Furthest (calibrate & lock)**), and audio option — including **unsupported probe** values. Save/load/rename **presets** as needed.
-4. Tap **Test selected configuration**. Watch **live sensor metadata** update in place during recording; the result panel (black background) shows success or a detailed fallback error log. Successful recordings are stored in **DCIM/Camera**.
+4. Choose **Standard** or **HQ ISP** test mode/tab, then tap **Test selected configuration**. Watch **live sensor metadata** update in place during recording; the result panel (black background) shows success or a detailed fallback error log. Successful recordings are stored in **DCIM/Camera**.
 
 ## Project structure
 
