@@ -17,6 +17,8 @@ import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.CamcorderProfile;
+import android.media.Image;
+import android.media.ImageReader;
 import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Build;
@@ -43,6 +45,7 @@ import org.json.JSONObject;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -75,6 +78,7 @@ public class MainActivity extends Activity {
     private SeekBar focusDistSeek;
     private TextView focusDistLabel;
     private TextView focusInfoText;
+    private Button btnFocusFurthest;
     private CheckBox cbAudio;
     private TextView supportedText;
     private TextView resultText;
@@ -89,6 +93,8 @@ public class MainActivity extends Activity {
     private volatile CameraCaptureSession openedSession;
 
     private float currentMinFocusDistance = 0f; // diopters, 0 = fixed/infinity
+    private volatile Float calibratedFurthestDiopter = null;
+    private volatile boolean calibrating = false;
     private volatile boolean liveMetaEnabled = false;
     private final AtomicLong lastMetaUiMs = new AtomicLong(0);
 
@@ -162,6 +168,7 @@ public class MainActivity extends Activity {
         focusDistSeek = findViewById(R.id.focus_dist_seek);
         focusDistLabel = findViewById(R.id.focus_dist_label);
         focusInfoText = findViewById(R.id.focus_info_text);
+        btnFocusFurthest = findViewById(R.id.btn_focus_furthest);
         cbAudio = findViewById(R.id.cb_audio);
         supportedText = findViewById(R.id.supported_text);
         resultText = findViewById(R.id.result_text);
@@ -180,6 +187,9 @@ public class MainActivity extends Activity {
         });
         btnTest.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { runTest(); }
+        });
+        btnFocusFurthest.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { startFurthestCalibration(); }
         });
         btnPresetSave.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { savePreset(); }
@@ -271,7 +281,8 @@ public class MainActivity extends Activity {
     private void updateFocusDistLabel() {
         float dist = getSelectedFocusDistance();
         String extra = (currentMinFocusDistance <= 0f) ? " (fixed-focus or unknown range)" : " of max " + String.format(Locale.US, "%.3f", currentMinFocusDistance);
-        focusDistLabel.setText("Manual focus distance (close ← → far, diopters): " + String.format(Locale.US, "%.3f", dist) + extra);
+        String cal = (calibratedFurthestDiopter != null) ? " | calibrated furthest=" + String.format(Locale.US, "%.3f", calibratedFurthestDiopter) + "d" : "";
+        focusDistLabel.setText("Manual focus distance (close ← → far, diopters): " + String.format(Locale.US, "%.3f", dist) + extra + cal);
     }
 
     private float getSelectedFocusDistance() {
@@ -280,6 +291,18 @@ public class MainActivity extends Activity {
         int max = focusDistSeek != null ? Math.max(1, focusDistSeek.getMax()) : 1000;
         // 0 = close (max diopters), max = far (0.0)
         return currentMinFocusDistance * (1f - (p / (float) max));
+    }
+
+    private int diopterToProgress(float diopter) {
+        if (currentMinFocusDistance <= 0f || focusDistSeek == null) return 0;
+        int max = Math.max(1, focusDistSeek.getMax());
+        float d = diopter;
+        if (d < 0f) d = 0f;
+        if (d > currentMinFocusDistance) d = currentMinFocusDistance;
+        float p = (1f - (d / currentMinFocusDistance)) * max;
+        int pi = Math.round(p);
+        if (pi < 0) pi = 0; if (pi > max) pi = max;
+        return pi;
     }
 
     private <T> void setSpinner(Spinner sp, List<T> items) {
@@ -505,6 +528,7 @@ public class MainActivity extends Activity {
 
     private void updateFocusControls(Float minFd, int[] afModes) {
         currentMinFocusDistance = (minFd != null && minFd > 0f) ? minFd : 0f;
+        calibratedFurthestDiopter = null; // reset per-camera calibration
         focusModeOptions.clear();
         Set<Integer> avail = new LinkedHashSet<>();
         if (afModes != null) for (int m : afModes) avail.add(m);
@@ -523,8 +547,12 @@ public class MainActivity extends Activity {
             }
         }
         setSpinner(focusModeSpinner, focusModeOptions);
-        // default seek to far (0 diopters) when variable focus supported
-        if (focusDistSeek != null) focusDistSeek.setProgress(focusDistSeek.getMax());
+        // default to far: avoid commanding exact 0.0 on uncalibrated lenses (mechanical overtravel risk).
+        // Use a small safe offset; user can tap "Furthest (calibrate & lock)" for best result.
+        if (focusDistSeek != null) {
+            float safeFar = currentMinFocusDistance > 0f ? Math.max(currentMinFocusDistance * 0.02f, 0.001f) : 0f;
+            focusDistSeek.setProgress(diopterToProgress(safeFar));
+        }
         updateFocusDistLabel();
     }
 
@@ -1090,6 +1118,327 @@ public class MainActivity extends Activity {
 
     private void setSel(Spinner sp, int idx, int size) {
         if (idx >= 0 && idx < size) sp.setSelection(idx);
+    }
+
+    // ---- Furthest focus calibration ----
+    private void startFurthestCalibration() {
+        if (calibrating) { showResult(false, "Calibration already in progress.", null); return; }
+        if (cameraIds.isEmpty()) { showResult(false, "No camera available.", null); return; }
+        if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            showResult(false, "CAMERA permission not granted.", null); return;
+        }
+        final int camIdx = Math.max(0, Math.min(cameraSpinner.getSelectedItemPosition(), cameraIds.size() - 1));
+        final String camId = cameraIds.get(camIdx);
+        // Do not interfere with an active test (test holds openedCamera/session)
+        if (openedCamera != null || openedSession != null) {
+            showResult(false, "Camera busy (test running). Try again after test finishes.", null); return;
+        }
+        calibrating = true;
+        resultText.setBackgroundColor(0xFF000000);
+        resultText.setTextColor(0xFFFFFFFF);
+        resultText.setText("Calibrating furthest focus...\nPoint camera at a distant, detailed scene.\nSweeping focus to find furthest sharp (non-blurry) distance.");
+        liveMetaText.setText("Calibrating furthest focus...");
+        startCameraThread();
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    final CalibResult cr = calibrateFurthest(camId);
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            if (cr.success) {
+                                calibratedFurthestDiopter = cr.diopter;
+                                // switch to manual focus mode if possible and set seekbar
+                                selectManualFocusMode();
+                                focusDistSeek.setProgress(diopterToProgress(cr.diopter));
+                                updateFocusDistLabel();
+                                resultText.setTextColor(0xFF80FF80);
+                                resultText.setText("SUCCESS\nFurthest (calibrated) locked.\n" + cr.message);
+                                liveMetaText.setText("Furthest locked @ " + String.format(Locale.US, "%.3f", cr.diopter) + " diopters");
+                            } else {
+                                // fallback: if we got a suggested diopter, still apply it
+                                if (cr.diopter >= 0f) {
+                                    calibratedFurthestDiopter = cr.diopter;
+                                    selectManualFocusMode();
+                                    focusDistSeek.setProgress(diopterToProgress(cr.diopter));
+                                    updateFocusDistLabel();
+                                }
+                                showResult(false, cr.message, null);
+                                liveMetaText.setText("Calibration ended");
+                            }
+                        }
+                    });
+                } catch (final Throwable t) {
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            showResult(false, "Calibration fatal error", t);
+                            liveMetaText.setText("Calibration error");
+                        }
+                    });
+                } finally {
+                    calibrating = false;
+                }
+            }
+        }, "CamResCalib").start();
+    }
+
+    static class CalibResult { boolean success; float diopter; String message; CalibResult(boolean s, float d, String m){success=s;diopter=d;message=m;} }
+
+    private void selectManualFocusMode() {
+        // prefer "Manual (set focus distance, AF OFF)" option
+        for (int i = 0; i < focusModeOptions.size(); i++) {
+            if (focusModeOptions.get(i).manualDistance) { focusModeSpinner.setSelection(i); return; }
+        }
+        // fallback: any OFF mode
+        for (int i = 0; i < focusModeOptions.size(); i++) {
+            if (focusModeOptions.get(i).afMode == CaptureRequest.CONTROL_AF_MODE_OFF) { focusModeSpinner.setSelection(i); return; }
+        }
+    }
+
+    private CalibResult calibrateFurthest(String camId) {
+        CameraManager cm = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+        CameraDevice camera = null;
+        CameraCaptureSession session = null;
+        ImageReader reader = null;
+        StringBuilder log = new StringBuilder();
+        try {
+            CameraCharacteristics c = cm.getCameraCharacteristics(camId);
+            Float minFdObj = c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+            Float hyper = c.get(CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE);
+            float minFd = (minFdObj != null) ? minFdObj : 0f;
+            log.append("minFocusDistance=").append(minFd).append(" hyperfocal=").append(hyper).append("\n");
+            if (minFd <= 0f) {
+                log.append("Fixed-focus lens: no variable focus distance to calibrate. Using 0.0.\n");
+                return new CalibResult(true, 0f, log.toString());
+            }
+            currentMinFocusDistance = minFd;
+
+            StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            Size yuvSize = chooseSmallYuvSize(map);
+            if (yuvSize == null) throw new RuntimeException("No YUV_420_888 output size available for calibration");
+            log.append("YUV size=").append(yuvSize.getWidth()).append("x").append(yuvSize.getHeight()).append("\n");
+
+            reader = ImageReader.newInstance(yuvSize.getWidth(), yuvSize.getHeight(), android.graphics.ImageFormat.YUV_420_888, 2);
+            final AtomicReference<Integer> lensStateRef = new AtomicReference<Integer>(null);
+            final Object imgLock = new Object();
+
+            log.append("Opening camera...\n");
+            camera = openCameraSync(cm, camId);
+            final CameraDevice camFinal = camera;
+            log.append("Creating calibration session...\n");
+            List<Surface> targets = new ArrayList<>();
+            targets.add(reader.getSurface());
+            session = createSessionSync(camera, targets);
+
+            // Build sweep candidates: avoid mechanical overtravel at both ends.
+            // Sweep from closer-in-safe down to near-zero-safe to find furthest sharp point inside range.
+            float upper = minFd * 0.80f; // avoid close-end overtravel
+            float lower = Math.max(minFd * 0.005f, 0.0f); // avoid commanding exact 0.0 (far-end overtravel)
+            int steps = 24;
+            List<Float> candidates = new ArrayList<>();
+            for (int i = 0; i <= steps; i++) {
+                float t = i / (float) steps;
+                float d = upper + (lower - upper) * t; // upper -> lower (towards far)
+                candidates.add(d);
+            }
+            // also consider hyperfocal as a candidate if valid
+            if (hyper != null && hyper > 0f && hyper < minFd) candidates.add(hyper);
+
+            List<float[]> samples = new ArrayList<>(); // [diopter, score]
+            double maxScore = -1;
+
+            log.append("Sweeping ").append(candidates.size()).append(" focus distances...\n");
+            postLiveMeta("Calibrating: sweeping focus...");
+            for (int i = 0; i < candidates.size(); i++) {
+                float d = candidates.get(i);
+                drainReader(reader);
+                lensStateRef.set(null);
+                CaptureRequest.Builder b = camFinal.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+                b.addTarget(reader.getSurface());
+                b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+                b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF);
+                b.set(CaptureRequest.LENS_FOCUS_DISTANCE, d);
+                CameraCaptureSession.CaptureCallback cb = new CameraCaptureSession.CaptureCallback() {
+                    @Override public void onCaptureCompleted(CameraCaptureSession s, CaptureRequest req, TotalCaptureResult res) {
+                        Integer ls = res.get(CaptureResult.LENS_STATE);
+                        lensStateRef.set(ls);
+                    }
+                };
+                session.setRepeatingRequest(b.build(), cb, cameraHandler);
+                // wait for lens to settle or timeout
+                long t0 = System.currentTimeMillis();
+                while (System.currentTimeMillis() - t0 < 600) {
+                    Integer ls = lensStateRef.get();
+                    if (ls != null && ls == CaptureResult.LENS_STATE_STATIONARY) break;
+                    sleepQuiet(30);
+                }
+                sleepQuiet(80); // small extra settle
+                Image img = acquireImage(reader, 800);
+                if (img == null) {
+                    log.append("  d=").append(fmtF(d)).append(" -> no image\n");
+                    continue;
+                }
+                double score = 0;
+                try { score = computeSharpness(img); } catch (Throwable t) { log.append("  d=").append(fmtF(d)).append(" sharpness err: ").append(t.getMessage()).append("\n"); }
+                try { img.close(); } catch (Throwable ignored) {}
+                log.append("  d=").append(fmtF(d)).append(" sharpness=").append(String.format(Locale.US, "%.2f", score)).append("\n");
+                if (i % 3 == 0) postLiveMeta("Calibrating...\nfocusDist=" + fmtF(d) + "d\nsharpness=" + String.format(Locale.US, "%.2f", score));
+                samples.add(new float[]{d, (float) score});
+                if (score > maxScore) maxScore = score;
+            }
+
+            if (maxScore <= 0 || samples.isEmpty()) {
+                float fb = fallbackFurthest(minFd, hyper);
+                log.append("Calibration could not measure sharpness reliably. Fallback furthest=").append(fmtF(fb)).append("\n");
+                return new CalibResult(false, fb, log.toString());
+            }
+
+            // Pick furthest (smallest diopter, closest to infinity) among those sufficiently sharp (>= 92% of max).
+            // This avoids mechanical overtravel past true optical infinity while staying "not blurry at all".
+            double threshold = maxScore * 0.92;
+            float chosen = -1f;
+            double chosenScore = -1;
+            for (float[] s : samples) {
+                if (s[1] >= threshold) {
+                    if (chosen < 0f || s[0] < chosen) { chosen = s[0]; chosenScore = s[1]; }
+                }
+            }
+            if (chosen < 0f) {
+                // fallback to absolute max sharpness
+                for (float[] s : samples) {
+                    if (s[1] == (float) maxScore || s[1] >= maxScore - 1e-6) { chosen = s[0]; chosenScore = s[1]; break; }
+                }
+            }
+            if (chosen < 0f) {
+                float fb = fallbackFurthest(minFd, hyper);
+                log.append("No suitable sharp sample. Fallback furthest=").append(fmtF(fb)).append("\n");
+                return new CalibResult(false, fb, log.toString());
+            }
+
+            log.append("Max sharpness=").append(String.format(Locale.US, "%.2f", maxScore))
+               .append(" threshold=").append(String.format(Locale.US, "%.2f", threshold))
+               .append(" -> chosen d=").append(fmtF(chosen)).append(" score=").append(String.format(Locale.US, "%.2f", chosenScore)).append("\n");
+
+            // safety: avoid commanding exact 0.0 which may overtravel on some lenses
+            if (chosen < minFd * 0.002f) chosen = Math.max(minFd * 0.002f, 0.001f);
+            if (chosen > minFd) chosen = minFd;
+
+            log.append("Chosen furthest (calibrated/locked)=").append(fmtF(chosen)).append(" diopters\n");
+            return new CalibResult(true, chosen, log.toString());
+        } catch (Throwable t) {
+            log.append("Calibration failed: ").append(t).append("\n").append(stackTrace(t));
+            try {
+                CameraCharacteristics c = cm.getCameraCharacteristics(camId);
+                Float minFdObj = c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+                Float hyper = c.get(CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE);
+                float fb = fallbackFurthest(minFdObj != null ? minFdObj : 0f, hyper);
+                log.append("Fallback furthest=").append(fmtF(fb)).append("\n");
+                return new CalibResult(false, fb, log.toString());
+            } catch (Throwable ignored) {}
+            return new CalibResult(false, -1f, log.toString());
+        } finally {
+            try { if (session != null) session.close(); } catch (Throwable ignored) {}
+            try { if (camera != null) camera.close(); } catch (Throwable ignored) {}
+            try { if (reader != null) reader.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    private float fallbackFurthest(float minFd, Float hyper) {
+        if (minFd <= 0f) return 0f;
+        // Prefer hyperfocal if sane (>0 and away from 0 to avoid overtravel) else a small safe offset from 0.0
+        if (hyper != null && hyper > (minFd * 0.002f) && hyper < minFd) return hyper;
+        // avoid exact 0.0 overtravel: pick ~2% of range above infinity as "furthest safe"
+        return Math.max(minFd * 0.02f, 0.001f);
+    }
+
+    private static String fmtF(float f) { return String.format(Locale.US, "%.4f", f); }
+
+    private Size chooseSmallYuvSize(StreamConfigurationMap map) {
+        if (map == null) return null;
+        Size[] sizes = null;
+        try { sizes = map.getOutputSizes(android.graphics.ImageFormat.YUV_420_888); } catch (Throwable ignored) {}
+        if (sizes == null || sizes.length == 0) return null;
+        Size best = null;
+        for (Size s : sizes) {
+            int area = s.getWidth() * s.getHeight();
+            if (area <= 0) continue;
+            // prefer sizes around/v under 640x480 for speed but not tiny
+            if (best == null) best = s;
+            int bestArea = best.getWidth() * best.getHeight();
+            // choose smallest >= 160x120, else smallest overall
+            boolean sOk = area >= 160 * 120;
+            boolean bOk = bestArea >= 160 * 120;
+            if (sOk && (!bOk || area < bestArea)) best = s;
+            else if (!bOk && !sOk && area < bestArea) best = s;
+        }
+        return best;
+    }
+
+    private void drainReader(ImageReader reader) {
+        if (reader == null) return;
+        try {
+            for (int i = 0; i < 3; i++) {
+                Image img = reader.acquireLatestImage();
+                if (img == null) break;
+                img.close();
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private Image acquireImage(ImageReader reader, long timeoutMs) {
+        long t0 = System.currentTimeMillis();
+        while (System.currentTimeMillis() - t0 < timeoutMs) {
+            try {
+                Image img = reader.acquireLatestImage();
+                if (img != null) return img;
+            } catch (Throwable ignored) {}
+            sleepQuiet(40);
+        }
+        return null;
+    }
+
+    private double computeSharpness(Image image) {
+        if (image == null) return 0;
+        Image.Plane[] planes = image.getPlanes();
+        if (planes == null || planes.length == 0) return 0;
+        ByteBuffer buf = planes[0].getBuffer();
+        int rowStride = planes[0].getRowStride();
+        int pixStride = planes[0].getPixelStride();
+        int w = image.getWidth();
+        int h = image.getHeight();
+        if (w < 10 || h < 10) return 0;
+        // sample center region for speed/robustness
+        int x0 = w / 4, x1 = (w * 3) / 4;
+        int y0 = h / 4, y1 = (h * 3) / 4;
+        int step = 2; // sample every 2px
+        double sum = 0, sumSq = 0;
+        int count = 0;
+        // Laplacian: center*4 - up-down-left-right (on sampled grid)
+        for (int y = y0 + step; y < y1 - step; y += step) {
+            int row = y * rowStride;
+            int rowUp = (y - step) * rowStride;
+            int rowDn = (y + step) * rowStride;
+            for (int x = x0 + step; x < x1 - step; x += step) {
+                int c = getLuma(buf, row, x, pixStride);
+                int up = getLuma(buf, rowUp, x, pixStride);
+                int dn = getLuma(buf, rowDn, x, pixStride);
+                int lf = getLuma(buf, row, x - step, pixStride);
+                int rt = getLuma(buf, row, x + step, pixStride);
+                double lap = (4.0 * c - up - dn - lf - rt);
+                sum += lap;
+                sumSq += lap * lap;
+                count++;
+            }
+        }
+        if (count <= 0) return 0;
+        double mean = sum / count;
+        double var = (sumSq / count) - (mean * mean);
+        return var; // variance of Laplacian
+    }
+
+    private int getLuma(ByteBuffer buf, int rowBase, int x, int pixStride) {
+        int idx = rowBase + x * pixStride;
+        if (idx < 0 || idx >= buf.limit()) return 0;
+        return buf.get(idx) & 0xFF;
     }
 
     // ---- utils ----

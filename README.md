@@ -22,7 +22,7 @@ Built as a **0-Gradle** project (pure Android SDK command-line tools), targeting
   - **Bitrate** — preset Mbps values **or** a custom bitrate in **Mbps** (overrides preset)
   - **Orientation** — Horizontal/Landscape (0°/180°) or Vertical/Portrait (90°/270°) via `MediaRecorder.setOrientationHint`
   - **Recording duration** — custom length in seconds
-  - **Focus control** — AF mode (Auto, Continuous Video/Picture, Macro, EDOF, OFF) and **manual focus distance** (close ↔ far, diopters) when supported by the lens
+  - **Focus control** — AF mode (Auto, Continuous Video/Picture, Macro, EDOF, OFF) and **manual focus distance** (close ↔ far, diopters) when supported by the lens, plus **Furthest (calibrate & lock)**: self-calibrates by sweeping focus and measuring sharpness (point at a distant detailed scene) to lock the furthest *non-blurry* distance, avoiding mechanical overtravel past true optical infinity on uncalibrated sensors (with safe hyperfocal/offset fallback; far end avoids commanding exact 0.0)
   - **Audio** — optional (requests `RECORD_AUDIO`)
 - **Live sensor metadata window** — during a test, displays **real-time, in-place** (non-spamming) capture metadata: AF/AE/AWB mode & state, lens focus distance/state, exposure time, ISO, frame duration (~fps), aperture, timestamp.
 - **Presets** — **save**, **load**, and **rename** named presets of test parameters for quick reuse.
@@ -69,7 +69,7 @@ Or download the debug APK from [Releases](../../releases).
 
 1. Grant **Camera** (and **Microphone** if you enable audio).
 2. Select a camera and tap **Scan supported video capabilities** to view reported sizes, FPS ranges, camcorder profiles, and focus/lens/AE info.
-3. Choose a resolution, FPS, encoder, output format, bitrate (preset or custom **Mbps**), orientation (horizontal/vertical), **duration (s)**, **focus mode & manual focus distance** (close↔far), and audio option — including **unsupported probe** values. Save/load/rename **presets** as needed.
+3. Choose a resolution, FPS, encoder, output format, bitrate (preset or custom **Mbps**), orientation (horizontal/vertical), **duration (s)**, **focus mode & manual focus distance** (close↔far, or use **Furthest (calibrate & lock)**), and audio option — including **unsupported probe** values. Save/load/rename **presets** as needed.
 4. Tap **Test selected configuration**. Watch **live sensor metadata** update in place during recording; the result panel (black background) shows success or a detailed fallback error log. Successful recordings are stored in **DCIM/Camera**.
 
 ## Project structure

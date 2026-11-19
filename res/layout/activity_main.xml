@@ -100,13 +100,19 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:max="1000" />
+        <Button
+            android:id="@+id/btn_focus_furthest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Furthest (calibrate &amp; lock)" />
+
         <TextView
             android:id="@+id/focus_info_text"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:textSize="12sp"
             android:typeface="monospace"
-            android:text="Focus range: scan camera to see supported modes/distances." />
+            android:text="Focus range: scan camera to see supported modes/distances. For 'Furthest', point at a distant detailed scene then calibrate." />
 
         <CheckBox
             android:id="@+id/cb_audio"
